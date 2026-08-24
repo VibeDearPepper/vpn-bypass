@@ -1,0 +1,19 @@
+# Personal runtime state: domains, resolved IPs, gateways and owned routes.
+sites.json
+sites.json.tmp
+
+# Local diagnostics and intermediate builds.
+.tmp/
+VpnBypass-fixed.exe
+VpnBypass.selftest.exe
+
+# Locally generated distribution archives.
+releases/
+
+# Editor and OS metadata.
+.vs/
+.vscode/
+*.user
+*.suo
+Thumbs.db
+Desktop.ini
