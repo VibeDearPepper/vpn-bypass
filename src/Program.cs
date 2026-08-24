@@ -419,24 +419,60 @@ namespace VpnBypass
         public Color BaseColor = Color.FromArgb(47, 112, 226);
         public int Radius = 10;
         private bool _hovered;
+        private bool _pressed;
 
         public ModernButton()
         {
             SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint |
-                ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
+                ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw |
+                ControlStyles.SupportsTransparentBackColor, true);
+            BackColor = Color.Transparent;
+            FlatStyle = FlatStyle.Flat;
+            FlatAppearance.BorderSize = 0;
+            UseVisualStyleBackColor = false;
             MouseEnter += delegate { _hovered = true; Invalidate(); };
-            MouseLeave += delegate { _hovered = false; Invalidate(); };
+            MouseLeave += delegate { _hovered = false; _pressed = false; Invalidate(); };
+            MouseDown += delegate(object sender, MouseEventArgs e) { if (e.Button == MouseButtons.Left) { _pressed = true; Invalidate(); } };
+            MouseUp += delegate { _pressed = false; Invalidate(); };
+            MouseCaptureChanged += delegate { _pressed = false; Invalidate(); };
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+            if (ClientSize.Width <= 0 || ClientSize.Height <= 0) return;
+            using (GraphicsPath path = Rounded(ClientRectangle, Radius))
+            {
+                Region previous = Region;
+                Region = new Region(path);
+                if (previous != null) previous.Dispose();
+            }
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs pevent)
+        {
         }
 
         protected override void OnPaint(PaintEventArgs e)
         {
+            if (Width <= 1 || Height <= 1) return;
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            Color fill = Enabled ? (_hovered ? ControlPaint.Light(BaseColor, 0.08F) : BaseColor) : Color.FromArgb(184, 191, 202);
+            Color fill = !Enabled ? Color.FromArgb(184, 191, 202)
+                : _pressed ? ControlPaint.Dark(BaseColor, 0.08F)
+                : _hovered ? ControlPaint.Light(BaseColor, 0.08F) : BaseColor;
             Rectangle rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using (GraphicsPath path = Rounded(rect, Radius))
             using (var brush = new SolidBrush(fill)) e.Graphics.FillPath(brush, path);
             TextRenderer.DrawText(e.Graphics, Text, Font, rect, Enabled ? ForeColor : Color.WhiteSmoke,
                 TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+
+            if (Focused && ShowFocusCues && Width > 8 && Height > 8)
+            {
+                Rectangle focusRect = new Rectangle(3, 3, Width - 7, Height - 7);
+                using (GraphicsPath focusPath = Rounded(focusRect, Math.Max(3, Radius - 3)))
+                using (var pen = new Pen(Color.FromArgb(150, Color.White)))
+                    e.Graphics.DrawPath(pen, focusPath);
+            }
         }
 
         private static GraphicsPath Rounded(Rectangle rect, int radius)
@@ -468,8 +504,12 @@ namespace VpnBypass
         private readonly Label _status = new Label();
         private readonly Timer _timer = new Timer();
         private readonly List<Button> _buttons = new List<Button>();
+        private readonly NotifyIcon _trayIcon = new NotifyIcon();
+        private readonly ContextMenuStrip _trayMenu = new ContextMenuStrip();
         private bool _loading;
         private bool _busy;
+        private bool _allowExit;
+        private bool _hiddenToTray;
         private int _ticks;
 
         public MainForm(bool preview)
@@ -478,6 +518,7 @@ namespace VpnBypass
             _configPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "sites.json");
             _state = StateStore.Load(_configPath);
             BuildUi();
+            ConfigureTray();
             LoadGateways();
             RefreshGrid();
             _timer.Interval = 5000;
@@ -490,6 +531,73 @@ namespace VpnBypass
             base.OnShown(e);
             if (_preview) SetStatus("Предварительный просмотр — маршруты не изменяются", Color.DarkOrange);
             else RunBusy("Проверяю исключения…", delegate { SyncAll(true); });
+        }
+
+        private void ConfigureTray()
+        {
+            _trayIcon.Icon = SystemIcons.Shield;
+            _trayIcon.Text = "VPN Bypass";
+            _trayMenu.Items.Add("Открыть", null, delegate { RestoreFromTray(); });
+            _trayMenu.Items.Add(new ToolStripSeparator());
+            _trayMenu.Items.Add("Выход", null, delegate { _allowExit = true; Close(); });
+            _trayIcon.ContextMenuStrip = _trayMenu;
+            _trayIcon.DoubleClick += delegate { RestoreFromTray(); };
+            FormClosing += MainFormClosing;
+            FormClosed += delegate
+            {
+                _trayIcon.Visible = false;
+                _trayIcon.Dispose();
+                _trayMenu.Dispose();
+            };
+        }
+
+        private void MainFormClosing(object sender, FormClosingEventArgs e)
+        {
+            if (_preview || _allowExit || e.CloseReason == CloseReason.WindowsShutDown ||
+                e.CloseReason == CloseReason.TaskManagerClosing) return;
+
+            DialogResult result = MessageBox.Show(
+                "Свернуть приложение в системный трей?\n\n" +
+                "Да — свернуть в трей\n" +
+                "Нет — закрыть полностью\n" +
+                "Отмена — вернуться в программу",
+                "VPN Bypass", MessageBoxButtons.YesNoCancel, MessageBoxIcon.Question,
+                MessageBoxDefaultButton.Button1);
+
+            if (result == DialogResult.Yes)
+            {
+                e.Cancel = true;
+                HideToTray();
+            }
+            else if (result == DialogResult.Cancel)
+            {
+                e.Cancel = true;
+            }
+            else
+            {
+                _allowExit = true;
+                _trayIcon.Visible = false;
+                _timer.Stop();
+            }
+        }
+
+        private void HideToTray()
+        {
+            _hiddenToTray = true;
+            _trayIcon.Visible = true;
+            ShowInTaskbar = false;
+            Hide();
+        }
+
+        private void RestoreFromTray()
+        {
+            if (!_hiddenToTray) return;
+            _hiddenToTray = false;
+            _trayIcon.Visible = false;
+            ShowInTaskbar = true;
+            Show();
+            WindowState = FormWindowState.Normal;
+            Activate();
         }
 
         private void BuildUi()
